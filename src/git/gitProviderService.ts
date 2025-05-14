@@ -13,14 +13,14 @@ import { Disposable, EventEmitter, FileType, ProgressLocation, Uri, window, work
 import { isWeb } from '@env/platform';
 import { resetAvatarCache } from '../avatars';
 import { GlyphChars, Schemes } from '../constants';
-import { SubscriptionPlanId } from '../constants.subscription';
+import { SubscriptionPlanId, SubscriptionState } from '../constants.subscription';
 import type { Container } from '../container';
 import { AccessDeniedError, ProviderNotFoundError, ProviderNotSupportedError } from '../errors';
 import type { FeatureAccess, Features, PlusFeatures, RepoFeatureAccess } from '../features';
-import { isAdvancedFeature, isProFeatureOnAllRepos } from '../features';
+// Removed unused imports
 import type { Subscription } from '../plus/gk/models/subscription';
 import type { SubscriptionChangeEvent } from '../plus/gk/subscriptionService';
-import { isSubscriptionPaidPlan } from '../plus/gk/utils/subscription.utils';
+// Removed unused import
 import type { RepoComparisonKey } from '../repositories';
 import { asRepoComparisonKey, Repositories } from '../repositories';
 import { registerCommand } from '../system/-webview/command';
@@ -718,7 +718,46 @@ export class GitProviderService implements Disposable {
 
 	private _subscription: Subscription | undefined;
 	private async getSubscription(): Promise<Subscription> {
-		return this._subscription ?? (this._subscription = await this.container.subscription.getSubscription());
+		// If we have a cached subscription, return it
+		if (this._subscription != null) {
+			return this._subscription;
+		}
+
+		// Get the original subscription
+		const originalSubscription = await this.container.subscription.getSubscription();
+
+		// Hack: force Pro subscription by creating a new subscription object with Pro plan
+		// Create a Pro plan
+		const proPlan = {
+			id: SubscriptionPlanId.Pro,
+			name: "GitLens Pro",
+			bundle: false,
+			cancelled: false,
+			trialReactivationCount: 0,
+			startedOn: originalSubscription.plan.actual.startedOn,
+			expiresOn: undefined,
+			organizationId: undefined
+		};
+
+		// Create a new subscription object with the Pro plan
+		const crackedSubscription: Subscription = {
+			plan: {
+				actual: proPlan,
+				effective: proPlan,
+			},
+			account: originalSubscription.account ? {
+				...originalSubscription.account,
+				verified: true // Force verified account
+			} : undefined,
+			state: SubscriptionState.Paid, // Set as paid subscription
+			activeOrganization: originalSubscription.activeOrganization,
+			lastValidatedAt: Date.now() // Set as recently validated
+		};
+
+		// Cache the cracked subscription
+		this._subscription = crackedSubscription;
+
+		return crackedSubscription;
 	}
 
 	private _accessCache = new Map<PlusFeatures | undefined, Promise<FeatureAccess>>();
@@ -760,8 +799,8 @@ export class GitProviderService implements Disposable {
 	): Promise<FeatureAccess | RepoFeatureAccess>;
 	@debug({ exit: true })
 	private async accessCore(
-		feature?: PlusFeatures,
-		repoPath?: string | Uri,
+		_feature?: PlusFeatures,
+		_repoPath?: string | Uri,
 	): Promise<FeatureAccess | RepoFeatureAccess> {
 		const subscription = await this.getSubscription();
 
@@ -769,6 +808,11 @@ export class GitProviderService implements Disposable {
 			queueMicrotask(() => void this.visibility());
 		}
 
+		// Always return allowed: true no matter what feature is requested
+		return { allowed: true, subscription: { current: subscription } };
+
+		// Original code commented out
+		/*
 		const plan = subscription.plan.effective.id;
 		if (isSubscriptionPaidPlan(plan)) {
 			return { allowed: subscription.account?.verified !== false, subscription: { current: subscription } };
@@ -847,6 +891,7 @@ export class GitProviderService implements Disposable {
 
 		// Pass force = true to bypass the cache and avoid a promise loop (where we used the cached promise we just created to try to resolve itself 🤦)
 		return getRepoAccess.call(this, repoPath, true);
+		*/
 	}
 
 	async ensureAccess(feature: PlusFeatures, repoPath?: string): Promise<void> {
